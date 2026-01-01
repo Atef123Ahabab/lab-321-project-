@@ -1,0 +1,251 @@
+VSFS METADATA JOURNALING - VISUAL GUIDE
+========================================
+
+┌─────────────────────────────────────────────────────────────┐
+│                    DISK LAYOUT (85 blocks)                   │
+├─────────────────────────────────────────────────────────────┤
+│ Block 0     │ SUPERBLOCK (magic, metadata)                  │
+├─────────────┼───────────────────────────────────────────────┤
+│ Blocks 1-16 │ ░░░░░░░░ JOURNAL (16 blocks) ░░░░░░░░        │
+│             │ Your changes go HERE first!                   │
+├─────────────┼───────────────────────────────────────────────┤
+│ Block 17    │ Inode Bitmap (64 bits for 64 inodes)         │
+│ Block 18    │ Data Bitmap (64 bits for 64 data blocks)     │
+├─────────────┼───────────────────────────────────────────────┤
+│ Blocks 19-20│ Inode Table (32 inodes per block)            │
+├─────────────┼───────────────────────────────────────────────┤
+│ Blocks 21-84│ Data Blocks (64 blocks for file content)     │
+└─────────────┴───────────────────────────────────────────────┘
+
+
+JOURNALING WORKFLOW
+===================
+
+┌────────────────────────────────────────────────────────────┐
+│ PHASE 1: CREATE (Write-Ahead Logging)                      │
+└────────────────────────────────────────────────────────────┘
+
+  User Command:
+  ./vsfs disk.img create myfile.txt
+                    │
+                    ▼
+  ┌─────────────────────────────────────┐
+  │ 1. Calculate metadata changes:      │
+  │    • Allocate inode #X              │
+  │    • Allocate data block #Y         │
+  │    • Update inode bitmap            │
+  │    • Update data bitmap             │
+  │    • Create inode entry             │
+  │    • Add directory entry            │
+  └─────────────────────────────────────┘
+                    │
+                    ▼
+  ┌─────────────────────────────────────┐
+  │ 2. Write to JOURNAL:                │
+  │                                      │
+  │   [DATA:Inode Bitmap]  ← 2 blocks  │
+  │   [DATA:Data Bitmap]   ← 2 blocks  │
+  │   [DATA:Inode Table 0] ← 2 blocks  │
+  │   [DATA:Inode Table 1] ← 2 blocks  │
+  │   [DATA:Root Dir]      ← 2 blocks  │
+  │   [COMMIT]             ← 1 block   │
+  │                          ─────────  │
+  │   Total: 11 blocks                  │
+  └─────────────────────────────────────┘
+                    │
+                    ▼
+  ┌─────────────────────────────────────┐
+  │ 3. DO NOT touch actual filesystem!  │
+  │    File is NOT visible yet.         │
+  └─────────────────────────────────────┘
+
+
+┌────────────────────────────────────────────────────────────┐
+│ PHASE 2: INSTALL (Transaction Replay)                      │
+└────────────────────────────────────────────────────────────┘
+
+  User Command:
+  ./vsfs disk.img install
+                    │
+                    ▼
+  ┌─────────────────────────────────────┐
+  │ 1. Scan journal for transactions:   │
+  │                                      │
+  │   ✓ Find DATA records               │
+  │   ✓ Find COMMIT marker              │
+  │   ✓ Transaction is complete!        │
+  └─────────────────────────────────────┘
+                    │
+                    ▼
+  ┌─────────────────────────────────────┐
+  │ 2. Apply each DATA record:          │
+  │                                      │
+  │   Inode Bitmap  → Block 17          │
+  │   Data Bitmap   → Block 18          │
+  │   Inode Table 0 → Block 19          │
+  │   Inode Table 1 → Block 20          │
+  │   Root Dir      → Block 21          │
+  └─────────────────────────────────────┘
+                    │
+                    ▼
+  ┌─────────────────────────────────────┐
+  │ 3. Clear journal (all zeros)        │
+  └─────────────────────────────────────┘
+                    │
+                    ▼
+  ┌─────────────────────────────────────┐
+  │ 4. File NOW visible!                │
+  │    ./vsfs disk.img ls               │
+  │    → myfile.txt    inode 1    0B    │
+  └─────────────────────────────────────┘
+
+
+CRASH RECOVERY SCENARIOS
+========================
+
+Scenario 1: Crash BEFORE COMMIT
+─────────────────────────────────
+  Journal: [DATA][DATA][DA... ← CRASH!
+                                  
+  Recovery: Transaction incomplete → DISCARD
+  Result: No changes applied ✓ SAFE
+
+Scenario 2: Crash AFTER COMMIT
+────────────────────────────────
+  Journal: [DATA][DATA][DATA][DATA][DATA][COMMIT] ← CRASH!
+                                  
+  Recovery: Transaction complete → REPLAY on next install
+  Result: Changes applied ✓ SAFE
+
+Scenario 3: Crash DURING INSTALL
+──────────────────────────────────
+  Journal: [DATA][DATA][DATA][DATA][DATA][COMMIT]
+  Applied: [✓][✓][✓]... ← CRASH!
+                                  
+  Recovery: Re-run install (idempotent operations)
+  Result: All changes applied ✓ SAFE
+
+
+JOURNAL RECORD FORMAT
+=====================
+
+DATA Record (2 blocks):
+┌─────────────────────────────────┐
+│ Block N: HEADER                  │
+│ ┌─────────────────────────────┐ │
+│ │ type: 1 (JOURNAL_DATA)       │ │
+│ │ block_num: 17 (destination)  │ │
+│ │ size: 4096                   │ │
+│ └─────────────────────────────┘ │
+└─────────────────────────────────┘
+┌─────────────────────────────────┐
+│ Block N+1: ACTUAL DATA          │
+│ ┌─────────────────────────────┐ │
+│ │ [4096 bytes of block data]   │ │
+│ │ (e.g., inode bitmap contents)│ │
+│ └─────────────────────────────┘ │
+└─────────────────────────────────┘
+
+COMMIT Record (1 block):
+┌─────────────────────────────────┐
+│ Block M: HEADER                  │
+│ ┌─────────────────────────────┐ │
+│ │ type: 2 (JOURNAL_COMMIT)     │ │
+│ │ block_num: 0 (unused)        │ │
+│ │ size: 0                      │ │
+│ └─────────────────────────────┘ │
+└─────────────────────────────────┘
+
+
+EXAMPLE SESSION
+===============
+
+$ ./mkfs.vsfs test.img
+  ✓ Created 85-block disk image
+
+$ ./vsfs test.img create file1.txt
+  ✓ Transaction logged (journal blocks 0-10)
+
+$ ./vsfs test.img ls
+  Total: 0 files              ← File NOT visible yet!
+
+$ ./vsfs test.img install
+  ✓ Applied 5 DATA records
+  ✓ Found 1 COMMIT
+  ✓ Cleared journal
+
+$ ./vsfs test.img ls
+  file1.txt    1    0B        ← File NOW visible!
+
+$ ./vsfs test.img check
+  ✓ File system is consistent
+
+
+KEY CONCEPTS
+============
+
+Write-Ahead Logging (WAL)
+  ├─ Log changes BEFORE applying them
+  ├─ Enables atomic operations
+  └─ Allows crash recovery
+
+Transaction Management
+  ├─ DATA records = proposed changes
+  ├─ COMMIT = mark transaction complete
+  └─ Incomplete = safe to ignore
+
+Idempotence
+  ├─ Can apply journal multiple times
+  ├─ Same final result
+  └─ Safe to retry after crash
+
+Atomicity
+  ├─ All changes or no changes
+  ├─ No partial updates
+  └─ Guaranteed by COMMIT marker
+
+
+PERFORMANCE NOTES
+=================
+
+Space Overhead:
+  • 16 journal blocks (65KB)
+  • ~19% of disk (16/85 blocks)
+
+Write Amplification:
+  • Each file creation:
+    - 11 journal blocks (write-ahead)
+    - 5 actual blocks (install)
+    - Total: 16 block writes
+
+Capacity:
+  • Journal fits 1 transaction
+  • Must install before next create
+  • Could increase JOURNAL_BLOCKS for more buffering
+
+Recovery Time:
+  • O(journal_size) scan
+  • 16 blocks = very fast
+  • Linear in journal size
+
+
+VALIDATION CHECKS
+=================
+
+./vsfs disk.img check
+
+✓ No dangling pointers
+  (All directory entries point to allocated inodes)
+
+✓ No leaks  
+  (All allocated inodes/blocks are reachable)
+
+✓ No double allocations
+  (Each block/inode allocated at most once)
+
+✓ Bitmaps match reality
+  (Bitmap bits match actual usage)
+
+
+This implementation demonstrates the core principles used in
+production file systems like ext3/ext4, NTFS, and XFS!
