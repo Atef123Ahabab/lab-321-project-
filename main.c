@@ -48,7 +48,7 @@ void cmd_ls(void) {
     printf("-------------------------------------------------------\n");
     
     int count = 0;
-    for (int i = 0; i < DIRENTS_PER_BLOCK; i++) {
+    for (size_t i = 0; i < DIRENTS_PER_BLOCK; i++) {
         if (entries[i].inum != 0) {
             inode_t *file_inode = &inode_table[entries[i].inum];
             printf("%-30s %10u %10u\n", entries[i].name, entries[i].inum, file_inode->size);
@@ -146,7 +146,7 @@ void cmd_check(void) {
     dirent_t *entries = (dirent_t *)root_dir_block;
     
     // Check each file
-    for (int i = 0; i < DIRENTS_PER_BLOCK; i++) {
+    for (size_t i = 0; i < DIRENTS_PER_BLOCK; i++) {
         if (entries[i].inum == 0) continue;
         
         uint32_t inum = entries[i].inum;
@@ -194,8 +194,8 @@ void cmd_check(void) {
         if (!bitmap_get(inode_bitmap, i)) continue;
         
         int found = 0;
-        for (int j = 0; j < DIRENTS_PER_BLOCK; j++) {
-            if (entries[j].inum == i) {
+        for (size_t j = 0; j < DIRENTS_PER_BLOCK; j++) {
+            if (entries[j].inum == (uint32_t)i) {
                 found = 1;
                 break;
             }

@@ -7,8 +7,6 @@
 // Helper function to find the next free position in journal
 static int find_journal_end(void) {
     uint8_t block[BLOCK_SIZE];
-    int current_block = JOURNAL_START;
-    int offset = 0;
     
     // Scan through journal blocks to find first empty spot
     for (int i = 0; i < JOURNAL_BLOCKS; i++) {
@@ -105,7 +103,7 @@ int create(const char *filename) {
     
     // Check if file already exists
     dirent_t *entries = (dirent_t *)root_dir_block;
-    for (int i = 0; i < DIRENTS_PER_BLOCK; i++) {
+    for (size_t i = 0; i < DIRENTS_PER_BLOCK; i++) {
         if (entries[i].inum != 0 && strcmp(entries[i].name, filename) == 0) {
             fprintf(stderr, "Error: File '%s' already exists\n", filename);
             return -1;
@@ -128,7 +126,7 @@ int create(const char *filename) {
     
     // Find free directory entry
     int free_dirent = -1;
-    for (int i = 0; i < DIRENTS_PER_BLOCK; i++) {
+    for (size_t i = 0; i < DIRENTS_PER_BLOCK; i++) {
         if (entries[i].inum == 0) {
             free_dirent = i;
             break;
